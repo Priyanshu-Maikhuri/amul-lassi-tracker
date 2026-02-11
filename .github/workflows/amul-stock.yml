@@ -53,7 +53,7 @@ jobs:
               // 1. Check for specific "Out of Stock" indicators
               const isOutOfStock = await page.evaluate(() => {
                 const text = document.body.innerText.toUpperCase();
-                return text.includes('OUT OF STOCK') || text.includes('NOT AVAILABLE');
+                return text.includes('OUT OF STOCK') || text.includes('NOT AVAILABLE') || text.includes('SOLD OUT');
               });
 
               // 2. Check for the "Add to Cart" button specifically
