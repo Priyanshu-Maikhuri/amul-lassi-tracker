@@ -2,27 +2,40 @@ name: Amul Lassi Stock Checker
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # runs every 15 minutes
-  workflow_dispatch:        # allows manual run
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 jobs:
   check-stock:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
       - name: Fetch product data from Amul API
-        id: fetch
         run: |
           curl -s \
             -H "Accept: application/json" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+            -H "Referer: https://shop.amul.com/" \
             "https://shop.amul.com/api/1/entity/ms.products?q=%7B%22alias%22:%22amul-high-protein-plain-lassi-200-ml-or-pack-of-30%22%7D&limit=1" \
             > response.json
+
+      - name: Validate JSON
+        run: |
+          if ! jq empty response.json; then
+            echo "Invalid JSON response:"
+            cat response.json
+            exit 1
+          fi
 
       - name: Extract availability
         id: parse
         run: |
-          AVAILABLE=$(jq '.data[0].available' response.json)
+          AVAILABLE=$(jq '.data[0].available // 0' response.json)
           echo "available=$AVAILABLE" >> $GITHUB_OUTPUT
+          echo "Available quantity: $AVAILABLE"
 
       - name: Send Telegram alert if in stock
         if: steps.parse.outputs.available != '0'
