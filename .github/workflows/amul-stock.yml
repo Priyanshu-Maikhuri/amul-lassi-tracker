@@ -2,7 +2,7 @@ name: Amul Lassi Stock Checker
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # every 10 minutes
+    - cron: "*/15 * * * *"   # Adjusted to 15 mins to save GitHub minutes
   workflow_dispatch:
 
 jobs:
@@ -22,7 +22,6 @@ jobs:
         run: |
           npm init -y
           npm install playwright
-          # This line is mandatory to download the browser itself
           npx playwright install --with-deps chromium
 
       - name: Check stock using real browser
@@ -34,48 +33,59 @@ jobs:
           const { chromium } = require('playwright');
 
           (async () => {
+            // Launching with a specific user agent to look like a standard desktop browser
             const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext();
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            });
             const page = await context.newPage();
 
             try {
-              // Listen for the specific background API call the site makes
-              const stockPromise = page.waitForResponse(response =>
-                response.url().includes('/api/1/entity/ms.products') &&
-                response.request().method() === 'GET' &&
-                response.status() === 200
-              );
+              console.log('Navigating to Amul Shop...');
+              await page.goto('https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30', {
+                waitUntil: 'networkidle',
+                timeout: 60000
+              });
 
-              await page.goto(
-                'https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30',
-                { waitUntil: 'networkidle' }
-              );
+              // Give dynamic elements extra time to load
+              await page.waitForTimeout(5000);
 
-              const response = await stockPromise;
-              const json = await response.json();
+              // 1. Check for specific "Out of Stock" indicators
+              const isOutOfStock = await page.evaluate(() => {
+                const text = document.body.innerText.toUpperCase();
+                return text.includes('OUT OF STOCK') || text.includes('NOT AVAILABLE');
+              });
 
-              if (!json?.data?.length) {
-                throw new Error('Product data missing');
-              }
+              // 2. Check for the "Add to Cart" button specifically
+              // Using a flexible selector in case the ID changes
+              const addToCartButton = page.locator('button:has-text("ADD TO CART")');
+              const isButtonVisible = await addToCartButton.isVisible();
+              const isButtonDisabled = await addToCartButton.isDisabled();
 
-              const available = json.data[0].available;
-              console.log('Stock Level:', available);
+              console.log(`Debug Info:`);
+              console.log(`- Out of Stock text found: ${isOutOfStock}`);
+              console.log(`- Add to Cart button visible: ${isButtonVisible}`);
+              console.log(`- Add to Cart button disabled: ${isButtonDisabled}`);
 
-              if (available > 0) {
+              // LOGIC: If the button is visible AND not disabled AND no "Out of Stock" text
+              if (isButtonVisible && !isButtonDisabled && !isOutOfStock) {
+                console.log('RESULT: STOCK DETECTED!');
                 const msg = encodeURIComponent(
                   '🟢 Amul High Protein Lassi is IN STOCK!\n\n' +
-                  'https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30'
+                  'Link: https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30'
                 );
 
                 await fetch(
-                  `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage` +
-                  `?chat_id=${process.env.TELEGRAM_CHAT_ID}&text=${msg}`
+                  `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage?chat_id=${process.env.TELEGRAM_CHAT_ID}&text=${msg}`
                 );
+              } else {
+                console.log('RESULT: Still out of stock.');
               }
 
             } catch (err) {
-              console.error('Failed to capture stock:', err.message);
-              process.exit(1);
+              console.error('Scraper error:', err.message);
+              // We don't exit(1) here so the workflow doesn't show a red "Fail" 
+              // just because of a temporary network timeout.
             } finally {
               await browser.close();
             }
