@@ -1,8 +1,8 @@
-name: Amul Lassi Stock Checker (Browser)
+name: Amul Lassi Stock Checker
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/10 * * * *"   # every 10 minutes
   workflow_dispatch:
 
 jobs:
@@ -22,7 +22,8 @@ jobs:
         run: |
           npm init -y
           npm install playwright
-          npx playwright install chromium
+          # This line is mandatory to download the browser itself
+          npx playwright install --with-deps chromium
 
       - name: Check stock using real browser
         env:
@@ -33,35 +34,50 @@ jobs:
           const { chromium } = require('playwright');
 
           (async () => {
-            const browser = await chromium.launch();
-            const page = await browser.newPage();
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext();
+            const page = await context.newPage();
 
-            await page.goto(
-              'https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30',
-              { waitUntil: 'networkidle' }
-            );
-
-            const available = await page.evaluate(async () => {
-              const res = await fetch(
-                '/api/1/entity/ms.products?q={"alias":"amul-high-protein-plain-lassi-200-ml-or-pack-of-30"}&limit=1'
-              );
-              const json = await res.json();
-              return json.data[0].available;
-            });
-
-            console.log('Available:', available);
-
-            if (available > 0) {
-              const msg = encodeURIComponent(
-                '🟢 Amul High Protein Lassi is IN STOCK!\n\n' +
-                'https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30'
+            try {
+              // Listen for the specific background API call the site makes
+              const stockPromise = page.waitForResponse(response =>
+                response.url().includes('/api/1/entity/ms.products') &&
+                response.request().method() === 'GET' &&
+                response.status() === 200
               );
 
-              await fetch(
-                `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage?chat_id=${process.env.TELEGRAM_CHAT_ID}&text=${msg}`
+              await page.goto(
+                'https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30',
+                { waitUntil: 'networkidle' }
               );
+
+              const response = await stockPromise;
+              const json = await response.json();
+
+              if (!json?.data?.length) {
+                throw new Error('Product data missing');
+              }
+
+              const available = json.data[0].available;
+              console.log('Stock Level:', available);
+
+              if (available > 0) {
+                const msg = encodeURIComponent(
+                  '🟢 Amul High Protein Lassi is IN STOCK!\n\n' +
+                  'https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30'
+                );
+
+                await fetch(
+                  `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage` +
+                  `?chat_id=${process.env.TELEGRAM_CHAT_ID}&text=${msg}`
+                );
+              }
+
+            } catch (err) {
+              console.error('Failed to capture stock:', err.message);
+              process.exit(1);
+            } finally {
+              await browser.close();
             }
-
-            await browser.close();
           })();
           EOF
