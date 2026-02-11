@@ -1,4 +1,4 @@
-name: Amul Lassi Stock Checker
+name: Amul Lassi Stock Checker (Browser)
 
 on:
   schedule:
@@ -10,37 +10,58 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Fetch product data from Amul API
-        run: |
-          curl -s \
-            -H "Accept: application/json" \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-            -H "Referer: https://shop.amul.com/" \
-            "https://shop.amul.com/api/1/entity/ms.products?q=%7B%22alias%22:%22amul-high-protein-plain-lassi-200-ml-or-pack-of-30%22%7D&limit=1" \
-            > response.json
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-      - name: Validate JSON
+      - name: Install Playwright
         run: |
-          if ! jq empty response.json; then
-            echo "Invalid JSON response:"
-            cat response.json
-            exit 1
-          fi
+          npm init -y
+          npm install playwright
+          npx playwright install chromium
 
-      - name: Extract availability
-        id: parse
+      - name: Check stock using real browser
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          AVAILABLE=$(jq '.data[0].available // 0' response.json)
-          echo "available=$AVAILABLE" >> $GITHUB_OUTPUT
-          echo "Available quantity: $AVAILABLE"
+          node << 'EOF'
+          const { chromium } = require('playwright');
 
-      - name: Send Telegram alert if in stock
-        if: steps.parse.outputs.available != '0'
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
-            -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
-            -d parse_mode=Markdown \
-            -d text="🟢 *Amul High Protein Lassi is IN STOCK!*%0A%0Ahttps://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30"
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+
+            await page.goto(
+              'https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30',
+              { waitUntil: 'networkidle' }
+            );
+
+            const available = await page.evaluate(async () => {
+              const res = await fetch(
+                '/api/1/entity/ms.products?q={"alias":"amul-high-protein-plain-lassi-200-ml-or-pack-of-30"}&limit=1'
+              );
+              const json = await res.json();
+              return json.data[0].available;
+            });
+
+            console.log('Available:', available);
+
+            if (available > 0) {
+              const msg = encodeURIComponent(
+                '🟢 Amul High Protein Lassi is IN STOCK!\n\n' +
+                'https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30'
+              );
+
+              await fetch(
+                `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage?chat_id=${process.env.TELEGRAM_CHAT_ID}&text=${msg}`
+              );
+            }
+
+            await browser.close();
+          })();
+          EOF
